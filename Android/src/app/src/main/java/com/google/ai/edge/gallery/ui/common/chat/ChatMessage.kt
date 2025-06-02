@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.unit.Dp
 import com.google.ai.edge.gallery.data.Model
+import java.util.UUID
 
 enum class ChatMessageType {
   INFO,
@@ -33,7 +34,8 @@ enum class ChatMessageType {
   CONFIG_VALUES_CHANGE,
   BENCHMARK_RESULT,
   BENCHMARK_LLM_RESULT,
-  PROMPT_TEMPLATES
+  PROMPT_TEMPLATES,
+  DOCUMENT // Added DOCUMENT type
 }
 
 enum class ChatSide {
@@ -48,11 +50,27 @@ open class ChatMessage(
   open val side: ChatSide,
   open val latencyMs: Float = -1f,
   open val accelerator: String = "",
+  // Adding id and timestamp to base for ChatMessageDocument,
+  // though they might not be used by all existing ChatMessage types.
+  // Alternatively, ChatMessageDocument could not inherit these if that's cleaner.
+  // For now, adding them here to match the provided data class structure.
+  open val id: String = UUID.randomUUID().toString(),
+  open val timestamp: Long = System.currentTimeMillis(),
+  // Adding stats for ChatMessageDocument, similar reasoning as above.
+  open val stats: ChatMessageStats? = null,
+
 ) {
   open fun clone(): ChatMessage {
-    return ChatMessage(type = type, side = side, latencyMs = latencyMs)
+    return ChatMessage(type = type, side = side, latencyMs = latencyMs, id = id, timestamp = timestamp, stats = stats)
   }
 }
+
+// Placeholder for ChatMessageStats if it's not defined elsewhere
+// data class ChatMessageStats(val someStat: String)
+// Remove this if ChatMessageStats is already defined.
+// Based on the prompt, ChatMessageDocument has llmBenchmarkResult, but ChatMessage base doesn't.
+// This implies ChatMessageDocument might need its own llmBenchmarkResult or the base class needs it.
+// For now, aligning with the prompt for ChatMessageDocument.
 
 /** Chat message for showing loading status. */
 class ChatMessageLoading(override val accelerator: String = "") :
@@ -200,3 +218,30 @@ class ChatMessagePromptTemplates(
 ) : ChatMessage(type = ChatMessageType.PROMPT_TEMPLATES, side = ChatSide.SYSTEM)
 
 data class PromptTemplate(val title: String, val description: String, val prompt: String)
+
+// Define ChatMessageStats if it's not defined. Assuming it's a placeholder based on the prompt.
+// If ChatMessageStats is a real class elsewhere, this might not be needed.
+// For the purpose of this diff, I'm assuming it needs to be defined or already exists.
+// Let's assume it might be a typealias or a simple data class for now if not complex.
+typealias ChatMessageStats = Map<String, String> // Example placeholder
+
+data class ChatMessageDocument(
+  val filename: String,
+  val uri: String, // Store the URI for potential future use (e.g., opening the doc)
+  override val id: String = UUID.randomUUID().toString(),
+  override val side: ChatSide = ChatSide.USER, // Or determine based on context
+  override val type: ChatMessageType = ChatMessageType.DOCUMENT,
+  override val timestamp: Long = System.currentTimeMillis(),
+  override val stats: ChatMessageStats? = null,
+  val llmBenchmarkResult: ChatMessageBenchmarkLlmResult? = null, // Specific to DOCUMENT or general?
+  override val accelerator: String? = null,
+) : ChatMessage(
+  type = type,
+  side = side,
+  id = id,
+  timestamp = timestamp,
+  stats = stats,
+  accelerator = accelerator ?: ""
+  // latencyMs is not in ChatMessageDocument per prompt, but is in base ChatMessage.
+  // This will use the default latencyMs from the base class.
+)

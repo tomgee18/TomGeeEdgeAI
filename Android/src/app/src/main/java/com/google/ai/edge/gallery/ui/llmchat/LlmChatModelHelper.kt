@@ -149,6 +149,8 @@ object LlmChatModelHelper {
     //
     // For a model that supports image modality, we need to add the text query chunk before adding
     // image.
+    // The `input` string may contain text prepended from a user-selected document,
+    // in addition to the user's typed message.
     val session = instance.session
     session.addQueryChunk(input)
     if (image != null) {

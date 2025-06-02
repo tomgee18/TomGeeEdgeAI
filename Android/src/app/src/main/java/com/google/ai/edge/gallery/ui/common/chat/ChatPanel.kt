@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.rounded.AttachFile // Import AttachFile icon
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -118,6 +119,7 @@ fun ChatPanel(
   onImageSelected: (Bitmap) -> Unit = {},
   chatInputType: ChatInputType = ChatInputType.TEXT,
   showStopButtonInInputWhenInProgress: Boolean = false,
+  onLaunchDocumentPicker: () -> Unit = {}, // New parameter
 ) {
   val uiState by viewModel.uiState.collectAsState()
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
@@ -357,7 +359,24 @@ fun ChatPanel(
                     is ChatMessageBenchmarkLlmResult -> MessageBodyBenchmarkLlm(
                       message = message, modifier = Modifier.wrapContentWidth()
                     )
-
+                    // Add case for ChatMessageDocument
+                    is ChatMessageDocument -> {
+                      Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp) // Consistent padding
+                      ) {
+                        Icon(
+                          Icons.Rounded.AttachFile, // Or a more specific document icon
+                          contentDescription = "Document",
+                          modifier = Modifier.size(20.dp) // Adjust size as needed
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                          text = message.filename,
+                          style = MaterialTheme.typography.bodyMedium // Consistent text style
+                        )
+                      }
+                    }
                     else -> {}
                   }
                 }
@@ -500,6 +519,7 @@ fun ChatPanel(
           showPromptTemplatesInMenu = false,
           showImagePickerInMenu = selectedModel.llmSupportImage,
           showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
+          onSelectDocumentClicked = onLaunchDocumentPicker, // Pass down
         )
       }
 
@@ -603,6 +623,7 @@ fun ChatPanelPreview() {
       onSendMessage = { _, _ -> },
       onRunAgainClicked = { _, _ -> },
       onBenchmarkClicked = { _, _, _, _ -> },
+      onLaunchDocumentPicker = {}, // Preview
     )
   }
 }

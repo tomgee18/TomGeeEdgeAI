@@ -66,6 +66,7 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Photo
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PostAdd
+import androidx.compose.material.icons.rounded.AttachFile // Assuming this icon exists or will be added
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -137,6 +138,9 @@ fun MessageInputText(
   showPromptTemplatesInMenu: Boolean = false,
   showImagePickerInMenu: Boolean = false,
   showStopButtonWhenInProgress: Boolean = false,
+  onSelectDocumentClicked: () -> Unit, // New parameter for triggering document selection
+  // selectedDocumentUri: Uri? = null, // Optional: if needed for display/clear
+  // onClearDocument: () -> Unit, // Optional: if a clear button is added here
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -147,6 +151,7 @@ fun MessageInputText(
   val cameraCaptureSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var tempPhotoUri by remember { mutableStateOf(value = Uri.EMPTY) }
   var pickedImages by remember { mutableStateOf<List<Bitmap>>(listOf()) }
+  // selectedDocumentUri state is removed, will be managed by the caller
   val updatePickedImages: (Bitmap) -> Unit = { bitmap ->
     val newPickedImages: MutableList<Bitmap> = mutableListOf()
     newPickedImages.addAll(pickedImages)
@@ -181,6 +186,8 @@ fun MessageInputText(
         })
       }
     }
+
+  // selectDocumentLauncher is removed, action will be invoked via onSelectDocumentClicked()
 
   Box(contentAlignment = Alignment.CenterStart) {
     // A preview panel for the selected image.
@@ -306,6 +313,19 @@ fun MessageInputText(
             showAddContentMenu = false
           })
         }
+        // Document selection.
+        DropdownMenuItem(text = {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Icon(Icons.Rounded.PostAdd, contentDescription = "") // Placeholder Icon
+            Text("Select document")
+          }
+        }, onClick = {
+          onSelectDocumentClicked() // Call the passed lambda
+          showAddContentMenu = false
+        })
         // Prompt history.
         DropdownMenuItem(text = {
           Row(
@@ -659,6 +679,7 @@ fun MessageInputTextPreview() {
         onSendMessage = {},
         showStopButtonWhenInProgress = true,
         showImagePickerInMenu = true,
+        onSelectDocumentClicked = {} // Preview: provide dummy lambda
       )
       MessageInputText(
         modelManagerViewModel = PreviewModelManagerViewModel(context = context),
@@ -671,6 +692,7 @@ fun MessageInputTextPreview() {
         onValueChanged = {},
         onSendMessage = {},
         showStopButtonWhenInProgress = true,
+        onSelectDocumentClicked = {} // Preview: provide dummy lambda
       )
       MessageInputText(
         modelManagerViewModel = PreviewModelManagerViewModel(context = context),
@@ -682,6 +704,7 @@ fun MessageInputTextPreview() {
         textFieldPlaceHolderRes = R.string.chat_textinput_placeholder,
         onValueChanged = {},
         onSendMessage = {},
+        onSelectDocumentClicked = {} // Preview: provide dummy lambda
       )
       MessageInputText(
         modelManagerViewModel = PreviewModelManagerViewModel(context = context),
@@ -693,6 +716,7 @@ fun MessageInputTextPreview() {
         textFieldPlaceHolderRes = R.string.chat_textinput_placeholder,
         onValueChanged = {},
         onSendMessage = {},
+        onSelectDocumentClicked = {} // Preview: provide dummy lambda
       )
       MessageInputText(
         modelManagerViewModel = PreviewModelManagerViewModel(context = context),
@@ -705,6 +729,7 @@ fun MessageInputTextPreview() {
         onValueChanged = {},
         onSendMessage = {},
         showStopButtonWhenInProgress = true,
+        onSelectDocumentClicked = {} // Preview: provide dummy lambda
       )
     }
   }

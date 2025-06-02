@@ -16,9 +16,15 @@
 
 package com.google.ai.edge.gallery.ui.llmchat
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.database.Cursor
 import android.graphics.Bitmap
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.data.ConfigKey
 import com.google.ai.edge.gallery.data.Model
@@ -26,6 +32,7 @@ import com.google.ai.edge.gallery.data.TASK_LLM_CHAT
 import com.google.ai.edge.gallery.data.TASK_LLM_ASK_IMAGE
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageBenchmarkLlmResult
+import com.google.ai.edge.gallery.ui.common.chat.ChatMessageDocument // Added import
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageLoading
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageText
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageType
@@ -47,13 +54,57 @@ private val STATS = listOf(
 )
 
 open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task = curTask) {
-  fun generateResponse(model: Model, input: String, image: Bitmap? = null, onError: () -> Unit) {
+  fun generateResponse(
+    model: Model,
+    input: String,
+    image: Bitmap? = null,
+    documentUri: String? = null, // Added documentUri parameter
+    onError: () -> Unit
+  ) {
     val accelerator = model.getStringConfigValue(key = ConfigKey.ACCELERATOR, defaultValue = "")
     viewModelScope.launch(Dispatchers.Default) {
+      var inputText = input
+      val context = getApplication<Context>()
+
+      // Add ChatMessageDocument if URI is present
+      if (documentUri != null) {
+        val uri = Uri.parse(documentUri)
+        val filename = getFileName(context, uri) ?: "Attached Document"
+        addMessage(
+          model = model,
+          message = ChatMessageDocument(
+            filename = filename,
+            uri = documentUri,
+            side = ChatSide.USER, // Assuming document is from user
+            accelerator = accelerator
+          )
+        )
+
+        // Read document content
+        try {
+          val contentResolver = context.contentResolver
+          contentResolver.openInputStream(uri)?.use { inputStream ->
+            BufferedReader(InputStreamReader(inputStream)).use { reader ->
+              val documentText = reader.readText()
+              Log.d(TAG, "Extracted document text for prepending: $documentText")
+              // Prepend document text to the user's input
+              inputText = "$documentText\n\n$input"
+            }
+          }
+        } catch (e: Exception) {
+          Log.e(TAG, "Error reading document content for prepending: ${e.message}")
+          // Optionally, inform the user about the error by adding another message
+          addMessage(
+            model = model,
+            message = ChatMessageWarning("Failed to read content from $filename.")
+          )
+        }
+      }
+
       setInProgress(true)
       setPreparing(true)
 
-      // Loading.
+      // Add Loading message *after* the document message (if any)
       addMessage(
         model = model,
         message = ChatMessageLoading(accelerator = accelerator),
@@ -82,7 +133,7 @@ open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task 
 
       try {
         LlmChatModelHelper.runInference(model = model,
-          input = input,
+          input = inputText, // Use potentially modified inputText
           image = image,
           resultListener = { partialResult, done ->
             val curTs = System.currentTimeMillis()
@@ -202,7 +253,7 @@ open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task 
 
       // Run inference.
       generateResponse(
-        model = model, input = message.content, onError = onError
+        model = model, input = message.content, documentUri = null, onError = onError // Pass null for documentUri here
       )
     }
   }
@@ -241,8 +292,32 @@ open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task 
     )
 
     // Re-generate the response automatically.
-    generateResponse(model = model, input = triggeredMessage.content, onError = {})
+    generateResponse(model = model, input = triggeredMessage.content, documentUri = null, onError = {}) // Pass null for documentUri here
   }
 }
 
 class LlmAskImageViewModel : LlmChatViewModel(curTask = TASK_LLM_ASK_IMAGE)
+
+// Helper function to get filename from URI
+//SuppressLint is used because the getColumnIndex method might return -1 if the column doesn't exist.
+//In a production app, more robust error handling for cursor operations would be advisable.
+@SuppressLint("Range")
+private fun getFileName(context: Context, uri: Uri): String? {
+  var result: String? = null
+  if (uri.scheme == "content") {
+    val cursor: Cursor? = context.contentResolver.query(uri, null, null, null, null)
+    cursor.use {
+      if (it != null && it.moveToFirst()) {
+        result = it.getString(it.getColumnIndex(OpenableColumns.DISPLAY_NAME))
+      }
+    }
+  }
+  if (result == null) {
+    result = uri.path
+    val cut = result?.lastIndexOf('/')
+    if (cut != -1 && cut != null) {
+      result = result?.substring(cut + 1)
+    }
+  }
+  return result
+}

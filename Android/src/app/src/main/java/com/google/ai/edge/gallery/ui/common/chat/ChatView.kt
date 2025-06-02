@@ -97,6 +97,7 @@ fun ChatView(
   onStopButtonClicked: (Model) -> Unit = {},
   chatInputType: ChatInputType = ChatInputType.TEXT,
   showStopButtonInInputWhenInProgress: Boolean = false,
+  onLaunchDocumentPicker: () -> Unit = {}, // New parameter
 ) {
   val uiState by viewModel.uiState.collectAsState()
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
@@ -245,6 +246,7 @@ fun ChatView(
                 .graphicsLayer { alpha = curAlpha },
               chatInputType = chatInputType,
               showStopButtonInInputWhenInProgress = showStopButtonInInputWhenInProgress,
+              onLaunchDocumentPicker = onLaunchDocumentPicker, // Pass down
             )
           }
         }
@@ -310,6 +312,7 @@ fun ChatScreenPreview() {
       onRunAgainClicked = { _, _ -> },
       onBenchmarkClicked = { _, _, _, _ -> },
       navigateUp = {},
+      onLaunchDocumentPicker = {}, // Preview
     )
   }
 }
