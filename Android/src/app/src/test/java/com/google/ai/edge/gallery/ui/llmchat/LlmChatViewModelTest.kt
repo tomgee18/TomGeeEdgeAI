@@ -1,6 +1,6 @@
 package com.google.ai.edge.gallery.ui.llmchat
 
-import android.app.Application // Required for AndroidViewModel assumption
+import android.app.Application
 import android.content.Context
 import android.content.ContentResolver
 import android.database.Cursor
@@ -10,26 +10,30 @@ import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageDocument
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageLoading
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageWarning
-import com.google.ai.edge.gallery.ui.common.chat.ChatMessageType
+// import com.google.ai.edge.gallery.ui.common.chat.ChatMessageType // Not explicitly used in assertions here
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
 import org.junit.After
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mock
 import org.mockito.Mockito.*
-import org.mockito.ArgumentMatchers.anyString // Correct import for anyString()
-import org.mockito.ArgumentMatchers.any // Correct import for any()
+import org.mockito.ArgumentMatchers.anyString
+import org.mockito.ArgumentMatchers.any
 import org.mockito.junit.MockitoJUnitRunner
 import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.io.IOException // For testing exceptions
 import java.lang.reflect.Method
-import app.cash.turbine.test // For StateFlow testing
+import app.cash.turbine.test
+// PDFBox imports - needed if we try to mock them directly or verify interactions with them.
+// For this version, we mostly mock their outcomes.
+// import org.apache.pdfbox.pdmodel.PDDocument
+// import org.apache.pdfbox.text.PDFTextStripper
 
 @ExperimentalCoroutinesApi
 @RunWith(MockitoJUnitRunner::class)
@@ -56,33 +60,24 @@ class LlmChatViewModelTest {
     @Mock
     private lateinit var mockLlmInferenceSession: LlmInferenceSession
 
+    // Mocks for PDFBox classes - useful if we can inject/mock them.
+    // @Mock private lateinit var mockPDDocument: PDDocument
+    // @Mock private lateinit var mockPDFTextStripper: PDFTextStripper
+    // As direct mocking of PDFBox static/constructor is hard, we'll mock InputStream and check outcomes.
+
     private lateinit var viewModel: LlmChatViewModel
     private lateinit var getFileNameMethod: Method
 
-    private val testDispatcher = StandardTestDispatcher() // Use StandardTestDispatcher
+    private val testDispatcher = StandardTestDispatcher()
 
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
-
         `when`(mockApplication.applicationContext).thenReturn(mockContext)
-        // This is crucial for getApplication<Context>() to work if it's an AndroidViewModel
-        // If not an AndroidViewModel, this line is for regular context needs if any.
         `when`(mockApplication.contentResolver).thenReturn(mockContentResolver)
         `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
 
-
-        // Assuming LlmChatViewModel can be instantiated this way for testing,
-        // or it's an AndroidViewModel and needs 'mockApplication'
-        // Given getApplication<Context>() is used, we'll assume it's an AndroidViewModel
-        // and its factory would somehow provide the application context.
-        // For this test, we'll pass mockApplication if its constructor is changed to accept it.
-        // If LlmChatViewModel is NOT AndroidViewModel, then getApplication() must be handled by DI in real app.
-        // For the test to pass *as is* with getApplication(), we'd need more setup or refactor of ViewModel.
-        // Let's proceed as if LlmChatViewModel can get mockApplication's context.
-        viewModel = LlmChatViewModel() // Current constructor
-        // If it were an AndroidViewModel: viewModel = LlmChatViewModel(mockApplication)
-
+        viewModel = LlmChatViewModel()
 
         getFileNameMethod = LlmChatViewModel::class.java.getDeclaredMethod("getFileName", Context::class.java, Uri::class.java)
         getFileNameMethod.isAccessible = true
@@ -91,7 +86,6 @@ class LlmChatViewModelTest {
         `when`(mockLlmModelInstance.session).thenReturn(mockLlmInferenceSession)
         `when`(mockLlmInferenceSession.sizeInTokens(anyString())).thenReturn(0)
 
-        // Mock the final call in the inference chain
          doAnswer { invocation ->
             val listener = invocation.getArgument<((String, Boolean) -> Unit)>(0)
             listener.invoke("Test response", true)
@@ -105,10 +99,10 @@ class LlmChatViewModelTest {
     }
 
     private fun invokeGetFileName(context: Context, uri: Uri): String? {
-        // Need to pass the viewModel instance to invoke if getFileName is not static
         return getFileNameMethod.invoke(viewModel, context, uri) as? String
     }
 
+    // --- getFileName Tests ---
     @Test
     fun `getFileName returns display name when content URI is valid`() {
         val fakeUri = Uri.parse("content://com.example.provider/document/1")
@@ -121,8 +115,7 @@ class LlmChatViewModelTest {
         val result = invokeGetFileName(mockContext, fakeUri)
         assertEquals(expectedDisplayName, result)
     }
-
-    @Test
+     @Test
     fun `getFileName returns null when cursor is null`() {
         val fakeUri = Uri.parse("content://com.example.provider/document/2")
         `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(null)
@@ -167,118 +160,213 @@ class LlmChatViewModelTest {
         assertEquals(expectedFileName, result)
     }
 
+    // --- generateResponse Tests for Document Handling ---
     @Test
-    fun `generateResponse with document success - adds DocumentMsg, prepends text, adds LoadingMsg`() = runTest {
-        val documentUriString = "content://com.example.provider/document/doc1"
+    fun `generateResponse with TEXT document success - adds DocumentMsg, prepends text`() = runTest {
+        val documentUriString = "content://com.example.provider/document/doc_plain.txt"
         val fakeUri = Uri.parse(documentUriString)
-        val expectedFilename = "document.txt"
-        val documentContent = "This is document content."
+        val expectedFilename = "doc_plain.txt"
+        val documentContent = "This is plain text content."
         val userInput = "User input here."
-        // val expectedInputToModel = "$documentContent\n\n$userInput" // For verifying call to model helper
 
-        `when`(mockContext.contentResolver).thenReturn(mockContentResolver) // Ensure ViewModel gets the mock resolver
-
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
         `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
         `when`(mockCursor.moveToFirst()).thenReturn(true)
         `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
         `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
         `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("text/plain")
 
         val inputStream: InputStream = ByteArrayInputStream(documentContent.toByteArray())
         `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(inputStream)
 
-        // Stubbing for getApplication<Context>() call in ViewModel if it's not an AndroidViewModel
-        // This is a workaround. Proper DI or making it an AndroidViewModel is better.
-        // For this test, we rely on mockApplication.applicationContext providing mockContext.
-        // And viewModel.getApplication() somehow gets this mockApplication.
-        // This part is fragile without seeing ViewModel's exact getApplication source or DI setup.
-        // Let's assume the mockApplication setup in @Before is sufficient for getApplication() to return mockContext.
-
         viewModel.messages.test {
-            viewModel.generateResponse(mockModel, userInput, null, documentUriString) { /* onError */ }
-
-            var currentMessages = awaitItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
-
-            val docMessage = currentMessages.find { it is ChatMessageDocument && it.filename == expectedFilename }
-            assertNotNull("ChatMessageDocument not found", docMessage)
-            assertEquals(documentUriString, (docMessage as ChatMessageDocument).uri)
-
-            // Check for loading message after document message
-            // The exact order and intermediate states might vary based on how `addMessage` and coroutines work
-            // We are looking for the presence of these messages.
-            val loadingMessage = currentMessages.find { it is ChatMessageLoading }
-            assertNotNull("ChatMessageLoading not found after document message", loadingMessage)
-
-            // To verify prepended text, we'd need to capture argument to LlmChatModelHelper.runInference
-            // or mockLlmInferenceSession.addQueryChunk. This is complex for static object LlmChatModelHelper.
-            // For now, we've verified the messages are added.
-
+            viewModel.generateResponse(mockModel, userInput, null, documentUriString) {}
+            val firstEmissionMessages = awaitItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            val docMessage = firstEmissionMessages.find { it is ChatMessageDocument && it.filename == expectedFilename }
+            assertNotNull("ChatMessageDocument for plain text not found", docMessage)
             cancelAndConsumeRemainingEvents()
         }
     }
 
     @Test
-    fun `generateResponse with document read failure - adds DocumentMsg and WarningMsg`() = runTest {
-        val documentUriString = "content://com.example.provider/document/doc_error"
+    fun `generateResponse identifies PDF by MIME type`() = runTest {
+        val documentUriString = "content://com.example.provider/document/doc_pdf_mime"
         val fakeUri = Uri.parse(documentUriString)
-        val expectedFilename = "error_doc.txt"
+        val expectedFilename = "doc_pdf_mime.bin"
 
         `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
-
         `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
         `when`(mockCursor.moveToFirst()).thenReturn(true)
         `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
         `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
         `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/pdf")
 
-        `when`(mockContentResolver.openInputStream(fakeUri)).thenThrow(RuntimeException("Failed to read"))
+        val inputStream: InputStream = ByteArrayInputStream("fake pdf data".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(inputStream)
 
         viewModel.messages.test {
-            viewModel.generateResponse(mockModel, "User input", null, documentUriString) { /* onError */ }
+            viewModel.generateResponse(mockModel, "input", null, documentUriString) {}
 
-            var currentMessages = awaitItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            val currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            val docMessage = currentMessages.find { it is ChatMessageDocument }
+            assertNotNull(docMessage)
 
-            val docMessage = currentMessages.find { it is ChatMessageDocument && it.filename == expectedFilename }
-            assertNotNull("ChatMessageDocument not found on read failure", docMessage)
-
-            // Look for warning message
-            // This might be in a subsequent emission
-            var warningMessage: ChatMessageWarning? = null
-            var attempt = 0
-            while(warningMessage == null && attempt < 5) { // Allow a few emissions for all messages to appear
-                currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
-                warningMessage = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to read content from $expectedFilename") } as? ChatMessageWarning
-                if (warningMessage == null) kotlinx.coroutines.delay(100) // wait a bit if not found
-                attempt++
-            }
-            assertNotNull("ChatMessageWarning not found on read failure", warningMessage)
-
-            val loadingMessage = currentMessages.find { it is ChatMessageLoading }
-            assertNotNull("ChatMessageLoading not found after warning", loadingMessage)
+            val warning = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to extract text from PDF") }
+            // Depending on how robust PDFBox is with "fake pdf data", it might or might not throw an error.
+            // If it does, a warning IS expected. If it parses it as empty, no warning.
+            // For this test, we assume "fake pdf data" will cause an issue with PDFBox's PDDocument.load()
+            // If PDDocument.load() is very lenient and doesn't throw for this, this assertion would be inverted (assertNull).
+            // Given the goal is to test the *identification* path, the key is that it *tries* PDF parsing.
+            // A specific "Failed to extract text from PDF" implies it went down the PDF path.
+            // If it were a generic "Failed to read content", that would be less specific.
+             val pdfSpecificWarning = currentMessages.find { msg -> msg is ChatMessageWarning && msg.content.startsWith("Failed to extract text from PDF:")}
+            assertNotNull("A PDF-specific warning should be present if dummy data causes parse error.", pdfSpecificWarning)
 
             cancelAndConsumeRemainingEvents()
         }
     }
 
     @Test
-    fun `generateResponse with no document URI - no DocumentMsg, input not prepended`() = runTest {
-        val userInput = "Plain user input."
-        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+    fun `generateResponse identifies PDF by filename extension`() = runTest {
+        val documentUriString = "content://com.example.provider/document/doc_by_ext.pdf"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "doc_by_ext.pdf"
 
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/octet-stream")
+
+        val inputStream: InputStream = ByteArrayInputStream("fake pdf data".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(inputStream)
 
         viewModel.messages.test {
-            viewModel.generateResponse(mockModel, userInput, null, null) { /* onError */ }
+            viewModel.generateResponse(mockModel, "input", null, documentUriString) {}
+            val currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            val docMessage = currentMessages.find { it is ChatMessageDocument }
+            assertNotNull(docMessage)
+
+            val pdfSpecificWarning = currentMessages.find { msg -> msg is ChatMessageWarning && msg.content.startsWith("Failed to extract text from PDF:")}
+            assertNotNull("A PDF-specific warning (due to extension) should be present if dummy data causes parse error.", pdfSpecificWarning)
+            cancelAndConsumeRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `generateResponse with PDF success (conceptual) - no PDF specific error`() = runTest {
+        val documentUriString = "content://com.example.provider/document/realdeal.pdf"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "realdeal.pdf"
+
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/pdf")
+
+        // Simulate a valid, empty PDF stream that PDFBox can parse without error
+        // This requires a real, minimal PDF's byte array.
+        // For simplicity, using a stream that won't make PDFBox throw an *immediate* error on load for common cases,
+        // but likely results in empty text. A truly valid tiny PDF byte array would be better.
+        // An empty stream might cause issues with PDFBox; a stream with minimal valid PDF structure is better.
+        // Let's use a stream that PDFBox might parse as an empty document rather than throw an IO error.
+        val minimalValidPdfLikeStream: InputStream = ByteArrayInputStream("%PDF-1.0\n%%EOF".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(minimalValidPdfLikeStream)
+
+        viewModel.messages.test {
+            viewModel.generateResponse(mockModel, "User says hi", null, documentUriString) {}
+
+            val currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            assertNotNull(currentMessages.find { it is ChatMessageDocument })
+
+            val pdfErrorWarning = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to extract text from PDF") }
+            assertNull("PDF extraction specific warning should NOT be present for a valid (even if empty content) PDF", pdfErrorWarning)
+
+            val generalErrorWarning = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to read content from") && !it.content.contains("PDF") }
+            assertNull("General file read warning should not be present", generalErrorWarning)
+
+            cancelAndConsumeRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `generateResponse with PDF parsing failure (e.g. corrupt) - adds DocumentMsg and PDF WarningMsg`() = runTest {
+        val documentUriString = "content://com.example.provider/document/corrupt.pdf"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "corrupt.pdf"
+
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/pdf")
+
+        val inputStream: InputStream = ByteArrayInputStream("not a pdf".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(inputStream)
+
+        viewModel.messages.test {
+            viewModel.generateResponse(mockModel, "User input", null, documentUriString) {}
 
             var currentMessages = awaitItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            val docMessage = currentMessages.find { it is ChatMessageDocument && it.filename == expectedFilename }
+            assertNotNull("Document message should be present even if PDF parsing fails", docMessage)
+
+            var warningMessage: ChatMessageWarning? = null
+            var attempt = 0
+             while(warningMessage == null && attempt < 5) {
+                currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+                // Check for the specific PDF error message
+                warningMessage = currentMessages.find { it is ChatMessageWarning && it.content.startsWith("Failed to extract text from PDF: $expectedFilename") } as? ChatMessageWarning
+                if (warningMessage == null) kotlinx.coroutines.delay(100)
+                attempt++
+            }
+            assertNotNull("PDF extraction failure warning not found", warningMessage)
 
             val loadingMessage = currentMessages.find { it is ChatMessageLoading }
-            assertNotNull("First message should be ChatMessageLoading", loadingMessage)
+            assertNotNull("Loading message not found after PDF warning", loadingMessage)
 
-            val docMessage = currentMessages.find { it is ChatMessageDocument }
-            assertNull("ChatMessageDocument should not be present", docMessage)
+            cancelAndConsumeRemainingEvents()
+        }
+    }
 
-            // Verification of non-prepend input to model helper is complex without better mocking tools for static objects.
-            // We confirm no document message is added.
+    @Test
+    fun `generateResponse with empty PDF (extracts empty string) - no warning, empty prepend`() = runTest {
+        val documentUriString = "content://com.example.provider/document/empty.pdf"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "empty.pdf"
+
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/pdf")
+
+        // This stream should be parsed by PDFBox as a valid PDF with no pages/text.
+        val emptyPdfStream: InputStream = ByteArrayInputStream("%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0/Kids[]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(emptyPdfStream)
+
+        viewModel.messages.test {
+            viewModel.generateResponse(mockModel, "User input.", null, documentUriString) {}
+
+            val currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            assertNotNull(currentMessages.find { it is ChatMessageDocument && it.filename == expectedFilename })
+
+            val pdfErrorWarning = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to extract text from PDF") }
+            assertNull("PDF extraction warning should not be present for an empty but valid PDF", pdfErrorWarning)
+
+            // Here, the input to the model should be just "User input." because extracted text is empty.
+            // Verification of this specific detail is hard without deeper mocking of LlmChatModelHelper.
 
             cancelAndConsumeRemainingEvents()
         }

@@ -23,6 +23,8 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.text.PDFTextStripper
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import androidx.lifecycle.viewModelScope
@@ -81,23 +83,44 @@ open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task 
         )
 
         // Read document content
+        val contentResolver = context.contentResolver
+        var extractedTextFromDocument: String? = null
         try {
-          val contentResolver = context.contentResolver
           contentResolver.openInputStream(uri)?.use { inputStream ->
-            BufferedReader(InputStreamReader(inputStream)).use { reader ->
-              val documentText = reader.readText()
-              Log.d(TAG, "Extracted document text for prepending: $documentText")
-              // Prepend document text to the user's input
-              inputText = "$documentText\n\n$input"
+            val mimeType = contentResolver.getType(uri)
+            if (mimeType == "application/pdf" || filename.endsWith(".pdf", ignoreCase = true)) {
+              // Process PDF
+              try {
+                PDDocument.load(inputStream).use { document -> // PDDocument.load closes the input stream
+                  val pdfTextStripper = PDFTextStripper()
+                  extractedTextFromDocument = pdfTextStripper.getText(document)
+                  Log.d(TAG, "Extracted PDF text: $extractedTextFromDocument")
+                }
+              } catch (e: Exception) {
+                Log.e(TAG, "Error reading PDF content: ${e.message}", e)
+                addMessage(
+                  model = model,
+                  message = ChatMessageWarning("Failed to extract text from PDF: $filename. ${e.localizedMessage}")
+                )
+              }
+            } else {
+              // Process as plain text
+              BufferedReader(InputStreamReader(inputStream)).use { reader ->
+                extractedTextFromDocument = reader.readText()
+                Log.d(TAG, "Extracted plain text: $extractedTextFromDocument")
+              }
             }
           }
         } catch (e: Exception) {
-          Log.e(TAG, "Error reading document content for prepending: ${e.message}")
-          // Optionally, inform the user about the error by adding another message
+          Log.e(TAG, "Error reading document content: ${e.message}", e)
           addMessage(
             model = model,
-            message = ChatMessageWarning("Failed to read content from $filename.")
+            message = ChatMessageWarning("Failed to read content from $filename. ${e.localizedMessage}")
           )
+        }
+
+        if (extractedTextFromDocument != null) {
+          inputText = "$extractedTextFromDocument\n\n$input"
         }
       }
 

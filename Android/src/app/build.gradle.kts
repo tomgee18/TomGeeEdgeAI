@@ -93,6 +93,7 @@ dependencies {
   implementation(libs.camerax.view)
   implementation(libs.openid.appauth)
   implementation(libs.androidx.splashscreen)
+  implementation("org.apache.pdfbox:pdfbox:3.0.5") // Added PDFBox
   testImplementation(libs.junit)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.espresso.core)
