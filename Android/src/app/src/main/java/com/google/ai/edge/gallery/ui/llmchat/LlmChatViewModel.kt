@@ -91,7 +91,8 @@ open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task 
             if (mimeType == "application/pdf" || filename.endsWith(".pdf", ignoreCase = true)) {
               // Process PDF
               try {
-                PDDocument.load(inputStream).use { document -> // PDDocument.load closes the input stream
+                // PDDocument's .use block will close the document, which in turn closes the inputStream passed to load()
+                PDDocument.load(inputStream).use { document ->
                   val pdfTextStripper = PDFTextStripper()
                   extractedTextFromDocument = pdfTextStripper.getText(document)
                   Log.d(TAG, "Extracted PDF text: $extractedTextFromDocument")
@@ -141,8 +142,11 @@ open class LlmChatViewModel(curTask: Task = TASK_LLM_CHAT) : ChatViewModel(task 
 
       // Run inference.
       val instance = model.instance as LlmModelInstance
-      var prefillTokens = instance.session.sizeInTokens(input)
+      // Calculate prefill tokens based on the final inputText that includes document content
+      var prefillTokens = instance.session.sizeInTokens(inputText)
       if (image != null) {
+        // Assuming a fixed token count for an image, this might need adjustment
+        // if image tokenization is more dynamic or handled differently by the model.
         prefillTokens += 257
       }
 

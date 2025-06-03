@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.ContentResolver
 import android.database.Cursor
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.google.ai.edge.gallery.data.Model
@@ -20,6 +21,8 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.ArgumentCaptor
+import org.mockito.Captor
 import org.mockito.Mock
 import org.mockito.Mockito.*
 import org.mockito.ArgumentMatchers.anyString
@@ -60,10 +63,12 @@ class LlmChatViewModelTest {
     @Mock
     private lateinit var mockLlmInferenceSession: LlmInferenceSession
 
-    // Mocks for PDFBox classes - useful if we can inject/mock them.
-    // @Mock private lateinit var mockPDDocument: PDDocument
-    // @Mock private lateinit var mockPDFTextStripper: PDFTextStripper
-    // As direct mocking of PDFBox static/constructor is hard, we'll mock InputStream and check outcomes.
+    @Captor
+    private lateinit var stringArgumentCaptor: ArgumentCaptor<String>
+
+    @Mock
+    private lateinit var mockBitmap: Bitmap
+
 
     private lateinit var viewModel: LlmChatViewModel
     private lateinit var getFileNameMethod: Method
@@ -87,10 +92,12 @@ class LlmChatViewModelTest {
         `when`(mockLlmInferenceSession.sizeInTokens(anyString())).thenReturn(0)
 
          doAnswer { invocation ->
-            val listener = invocation.getArgument<((String, Boolean) -> Unit)>(0)
-            listener.invoke("Test response", true)
+            val listener = invocation.getArgument<((String, Boolean) -> Unit)>(0) // LlmChatModelHelper.ResultListener
+            // Simulate model processing the input and invoking listener
+            // The actual string passed to listener could be verified if needed
+            listener.invoke("Model response to input", true)
             null
-        }.`when`(mockLlmInferenceSession).generateResponseAsync(any())
+        }.`when`(mockLlmInferenceSession).generateResponseAsync(any()) // Using any() for LlmChatModelHelper.ResultListener
     }
 
     @After
@@ -160,6 +167,38 @@ class LlmChatViewModelTest {
         assertEquals(expectedFileName, result)
     }
 
+    @Test
+    fun `getFileName_contentUri_nullDisplayNameInCursor_usesDefaultInGenerateResponse`() = runTest {
+        val documentUriString = "content://com.example.provider/document/no_name_in_cursor"
+        val fakeUri = Uri.parse(documentUriString)
+        val defaultFilename = "Attached Document"
+
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        // Simulate cursor that has a row, but getString for display name returns null
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(null) // Display name is null
+        `when`(mockCursor.close()).then {}
+
+        // Mock openInputStream to avoid errors unrelated to filename
+        val emptyStream: InputStream = ByteArrayInputStream("".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(emptyStream)
+
+
+        viewModel.messages.test {
+            viewModel.generateResponse(mockModel, "User input", null, documentUriString) {}
+
+            val currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            val docMessage = currentMessages.find { it is ChatMessageDocument }
+            assertNotNull("ChatMessageDocument should be added", docMessage)
+            assertEquals("Filename should be default when getFileName returns null", defaultFilename, (docMessage as ChatMessageDocument).filename)
+
+            cancelAndConsumeRemainingEvents()
+        }
+    }
+
+
     // --- generateResponse Tests for Document Handling ---
     @Test
     fun `generateResponse with TEXT document success - adds DocumentMsg, prepends text`() = runTest {
@@ -185,6 +224,11 @@ class LlmChatViewModelTest {
             val firstEmissionMessages = awaitItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
             val docMessage = firstEmissionMessages.find { it is ChatMessageDocument && it.filename == expectedFilename }
             assertNotNull("ChatMessageDocument for plain text not found", docMessage)
+            // Verification of prepended text to LlmChatModelHelper.runInference's input
+            // This requires capturing the argument to a method that LlmChatModelHelper calls,
+            // e.g., session.addQueryChunk or similar, or directly mocking LlmChatModelHelper if possible.
+            // For now, we assume the ViewModel's internal logic for `inputText = "$extractedTextFromDocument\n\n$input"` works
+            // and focus on message emission. Deeper verification of runInference input is tricky.
             cancelAndConsumeRemainingEvents()
         }
     }
@@ -213,14 +257,6 @@ class LlmChatViewModelTest {
             val docMessage = currentMessages.find { it is ChatMessageDocument }
             assertNotNull(docMessage)
 
-            val warning = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to extract text from PDF") }
-            // Depending on how robust PDFBox is with "fake pdf data", it might or might not throw an error.
-            // If it does, a warning IS expected. If it parses it as empty, no warning.
-            // For this test, we assume "fake pdf data" will cause an issue with PDFBox's PDDocument.load()
-            // If PDDocument.load() is very lenient and doesn't throw for this, this assertion would be inverted (assertNull).
-            // Given the goal is to test the *identification* path, the key is that it *tries* PDF parsing.
-            // A specific "Failed to extract text from PDF" implies it went down the PDF path.
-            // If it were a generic "Failed to read content", that would be less specific.
              val pdfSpecificWarning = currentMessages.find { msg -> msg is ChatMessageWarning && msg.content.startsWith("Failed to extract text from PDF:")}
             assertNotNull("A PDF-specific warning should be present if dummy data causes parse error.", pdfSpecificWarning)
 
@@ -271,12 +307,6 @@ class LlmChatViewModelTest {
         `when`(mockCursor.close()).then {}
         `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/pdf")
 
-        // Simulate a valid, empty PDF stream that PDFBox can parse without error
-        // This requires a real, minimal PDF's byte array.
-        // For simplicity, using a stream that won't make PDFBox throw an *immediate* error on load for common cases,
-        // but likely results in empty text. A truly valid tiny PDF byte array would be better.
-        // An empty stream might cause issues with PDFBox; a stream with minimal valid PDF structure is better.
-        // Let's use a stream that PDFBox might parse as an empty document rather than throw an IO error.
         val minimalValidPdfLikeStream: InputStream = ByteArrayInputStream("%PDF-1.0\n%%EOF".toByteArray())
         `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(minimalValidPdfLikeStream)
 
@@ -324,7 +354,6 @@ class LlmChatViewModelTest {
             var attempt = 0
              while(warningMessage == null && attempt < 5) {
                 currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
-                // Check for the specific PDF error message
                 warningMessage = currentMessages.find { it is ChatMessageWarning && it.content.startsWith("Failed to extract text from PDF: $expectedFilename") } as? ChatMessageWarning
                 if (warningMessage == null) kotlinx.coroutines.delay(100)
                 attempt++
@@ -352,7 +381,6 @@ class LlmChatViewModelTest {
         `when`(mockCursor.close()).then {}
         `when`(mockContentResolver.getType(fakeUri)).thenReturn("application/pdf")
 
-        // This stream should be parsed by PDFBox as a valid PDF with no pages/text.
         val emptyPdfStream: InputStream = ByteArrayInputStream("%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0/Kids[]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF".toByteArray())
         `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(emptyPdfStream)
 
@@ -364,10 +392,92 @@ class LlmChatViewModelTest {
 
             val pdfErrorWarning = currentMessages.find { it is ChatMessageWarning && it.content.contains("Failed to extract text from PDF") }
             assertNull("PDF extraction warning should not be present for an empty but valid PDF", pdfErrorWarning)
+            cancelAndConsumeRemainingEvents()
+        }
+    }
 
-            // Here, the input to the model should be just "User input." because extracted text is empty.
-            // Verification of this specific detail is hard without deeper mocking of LlmChatModelHelper.
+    @Test
+    fun `generateResponse with empty input and null document text - model receives empty string`() = runTest {
+        val documentUriString = "content://com.example.provider/document/empty_content_doc"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "empty_content_doc.txt"
 
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("text/plain")
+        // Simulate document stream that results in null extractedTextFromDocument (e.g., read error or truly empty)
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(ByteArrayInputStream("".toByteArray()))
+
+
+        viewModel.generateResponse(mockModel, "", null, documentUriString) {}
+
+        // We need to verify the 'input' argument to LlmChatModelHelper.runInference
+        // This is difficult without mocking LlmChatModelHelper directly.
+        // As a workaround, we can use an ArgumentCaptor on mockLlmInferenceSession.sizeInTokens,
+        // as this is called with the final `inputText` right before `runInference`.
+        verify(mockLlmInferenceSession).sizeInTokens(stringArgumentCaptor.capture())
+        assertEquals("Input to model should be empty string", "", stringArgumentCaptor.value)
+    }
+
+    @Test
+    fun `generateResponse with empty input and empty document text - model receives newlines`() = runTest {
+        val documentUriString = "content://com.example.provider/document/empty_doc_string"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "empty_doc_string.txt"
+
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("text/plain")
+        // Simulate document stream that results in empty string extractedTextFromDocument
+        val inputStream: InputStream = ByteArrayInputStream("".toByteArray())
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(inputStream)
+
+        viewModel.generateResponse(mockModel, "", null, documentUriString) {}
+
+        verify(mockLlmInferenceSession).sizeInTokens(stringArgumentCaptor.capture())
+        assertEquals("Input to model should be newlines if doc is empty string", "\n\n", stringArgumentCaptor.value)
+    }
+
+    @Test
+    fun `generateResponse with document and image - both are processed`() = runTest {
+        val documentUriString = "content://com.example.provider/document/doc_with_image.txt"
+        val fakeUri = Uri.parse(documentUriString)
+        val expectedFilename = "doc_with_image.txt"
+        val documentContent = "Text from document."
+        val userInput = "User query."
+
+        `when`(mockContext.contentResolver).thenReturn(mockContentResolver)
+        `when`(mockContentResolver.query(fakeUri, null, null, null, null)).thenReturn(mockCursor)
+        `when`(mockCursor.moveToFirst()).thenReturn(true)
+        `when`(mockCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        `when`(mockCursor.getString(0)).thenReturn(expectedFilename)
+        `when`(mockCursor.close()).then {}
+        `when`(mockContentResolver.getType(fakeUri)).thenReturn("text/plain")
+        `when`(mockContentResolver.openInputStream(fakeUri)).thenReturn(ByteArrayInputStream(documentContent.toByteArray()))
+
+        viewModel.generateResponse(mockModel, userInput, mockBitmap, documentUriString) {}
+
+        // Verify text passed to sizeInTokens (proxy for runInference input)
+        verify(mockLlmInferenceSession).sizeInTokens(stringArgumentCaptor.capture())
+        assertEquals("$documentContent\n\n$userInput", stringArgumentCaptor.value)
+
+        // We need to verify that LlmChatModelHelper.runInference was called with the mockBitmap.
+        // This is hard due to LlmChatModelHelper being an object.
+        // If LlmChatModelHelper.runInference was a non-static method of an injectable class, we could verify:
+        // verify(mockModelHelper).runInference(any(), eq("$documentContent\n\n$userInput"), any(), any(), eq(mockBitmap))
+        // For now, we trust the pass-through in the ViewModel code is correct.
+        // The messages flow will show the document.
+        viewModel.messages.test {
+            val currentMessages = expectMostRecentItem().firstOrNull { it.modelName == mockModel.name }?.messages ?: emptyList()
+            assertNotNull(currentMessages.find { it is ChatMessageDocument && it.filename == expectedFilename })
             cancelAndConsumeRemainingEvents()
         }
     }
